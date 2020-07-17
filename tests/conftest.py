@@ -569,7 +569,6 @@ def salt_factories_config():
     Return a dictionary with the keyworkd arguments for SaltFactoriesManager
     """
     return {
-        "executable": sys.executable,
         "code_dir": str(CODE_DIR),
         "inject_coverage": MAYBE_RUN_COVERAGE,
         "inject_sitecustomize": MAYBE_RUN_COVERAGE,

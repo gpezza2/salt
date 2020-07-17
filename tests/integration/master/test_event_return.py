@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 import salt.ext.six as six
@@ -57,6 +58,7 @@ class TestEventReturn(AdaptedConfigurationTestCaseMixin, ScriptPathMixin, TestCa
     def test_master_startup(self):
         proc = NonBlockingPopen(
             [
+                sys.executable,
                 self.get_script_path("master"),
                 "-c",
                 RUNTIME_VARS.TMP_CONF_DIR,

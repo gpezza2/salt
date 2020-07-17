@@ -29,7 +29,7 @@ def salt_mm_master_config(request, salt_factories):
     ) as rfh:
         config_defaults = yaml.deserialize(rfh.read())
 
-    config_defaults["root_dir"] = root_dir.strpath
+    config_defaults["root_dir"] = str(root_dir)
 
     config_overrides = {
         "file_roots": {
@@ -96,7 +96,7 @@ def salt_mm_sub_master_config(request, salt_factories, salt_mm_master):
         config_defaults = yaml.deserialize(rfh.read())
     root_dir = salt_factories._get_root_dir_for_daemon("mm-master")
 
-    config_defaults["root_dir"] = root_dir.strpath
+    config_defaults["root_dir"] = str(root_dir)
 
     config_overrides = {
         "file_roots": {
