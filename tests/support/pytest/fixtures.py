@@ -9,16 +9,21 @@
     Please refrain from adding fixtures to this module and instead add them to the appropriate
     ``conftest.py`` file.
 """
+import logging
 import os
 import shutil
 import stat
 import sys
+import textwrap
 
 import pytest
 import salt.utils.files
+import saltfactories.utils.ports
 from salt.serializers import yaml
 from salt.utils.immutabletypes import freeze
 from tests.support.runtests import RUNTIME_VARS
+
+log = logging.getLogger(__name__)
 
 
 def _get_virtualenv_binary_path():
@@ -59,6 +64,11 @@ def _get_virtualenv_binary_path():
             virtualenv_binary = None
         _get_virtualenv_binary_path.__virtualenv_binary__ = virtualenv_binary
         return virtualenv_binary
+
+
+@pytest.fixture(scope="session")
+def salt_ssh_sshd_port():
+    return saltfactories.utils.ports.get_unused_localhost_port()
 
 
 @pytest.fixture(scope="session")
@@ -145,7 +155,7 @@ def prod_env_pillar_tree_root_dir(pillar_tree_root_dir):
 
 
 @pytest.fixture(scope="session")
-def salt_syndic_master_config(request, salt_factories):
+def salt_syndic_master_config(request, salt_factories, salt_ssh_sshd_port):
     root_dir = salt_factories._get_root_dir_for_daemon("syndic_master")
     conf_dir = root_dir / "conf"
     conf_dir.mkdir(exist_ok=True)
@@ -224,6 +234,28 @@ def salt_syndic_master_config(request, salt_factories):
         }
     )
 
+    # We also need a salt-ssh roster config file
+    roster_path = str(conf_dir / "roster")
+    roster_contents = textwrap.dedent(
+        """\
+        localhost:
+          host: 127.0.0.1
+          port: {}
+          user: {}
+          mine_functions:
+            test.arg: ['itworked']
+        """.format(
+            salt_ssh_sshd_port, RUNTIME_VARS.RUNNING_TESTS_USER
+        )
+    )
+    log.debug(
+        "Writing to configuration file %s. Configuration:\n%s",
+        roster_path,
+        roster_contents,
+    )
+    with salt.utils.files.fopen(roster_path, "w") as wfh:
+        wfh.write(roster_contents)
+
     return salt_factories.configure_master(
         request,
         "syndic_master",
@@ -241,7 +273,9 @@ def salt_syndic_config(request, salt_factories, salt_syndic_master_config):
 
 
 @pytest.fixture(scope="session")
-def salt_master_config(request, salt_factories, salt_syndic_master_config):
+def salt_master_config(
+    request, salt_factories, salt_syndic_master_config, salt_ssh_sshd_port
+):
     root_dir = salt_factories._get_root_dir_for_daemon("master")
     conf_dir = root_dir / "conf"
     conf_dir.mkdir(exist_ok=True)
@@ -341,6 +375,28 @@ def salt_master_config(request, salt_factories, salt_syndic_master_config):
             shutil.copytree(source, dest)
         else:
             shutil.copyfile(source, dest)
+
+    # We also need a salt-ssh roster config file
+    roster_path = str(conf_dir / "roster")
+    roster_contents = textwrap.dedent(
+        """\
+        localhost:
+          host: 127.0.0.1
+          port: {}
+          user: {}
+          mine_functions:
+            test.arg: ['itworked']
+        """.format(
+            salt_ssh_sshd_port, RUNTIME_VARS.RUNNING_TESTS_USER
+        )
+    )
+    log.debug(
+        "Writing to configuration file %s. Configuration:\n%s",
+        roster_path,
+        roster_contents,
+    )
+    with salt.utils.files.fopen(roster_path, "w") as wfh:
+        wfh.write(roster_contents)
 
     return salt_factories.configure_master(
         request,
@@ -494,6 +550,7 @@ def bridge_pytest_and_runtests(
     salt_master_config,
     salt_minion_config,
     salt_sub_minion_config,
+    sshd_config_dir,
 ):
     # Make sure unittest2 uses the pytest generated configuration
     RUNTIME_VARS.RUNTIME_CONFIGS["master"] = freeze(salt_master_config)
@@ -517,6 +574,55 @@ def bridge_pytest_and_runtests(
     )
     RUNTIME_VARS.TMP_SYNDIC_MINION_CONF_DIR = os.path.dirname(
         salt_syndic_config["conf_file"]
+    )
+    RUNTIME_VARS.TMP_SSH_CONF_DIR = sshd_config_dir
+
+
+@pytest.fixture(scope="session")
+def sshd_config_dir(salt_factories):
+    config_dir = salt_factories._get_root_dir_for_daemon("sshd")
+    yield config_dir
+    shutil.rmtree(str(config_dir), ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def sshd_server(request, salt_factories, salt_ssh_sshd_port, sshd_config_dir):
+    sshd_config_dict = {
+        "Protocol": "2",
+        # Turn strict modes off so that we can operate in /tmp
+        "StrictModes": "no",
+        # Logging
+        "SyslogFacility": "AUTH",
+        "LogLevel": "INFO",
+        # Authentication:
+        "LoginGraceTime": "120",
+        "PermitRootLogin": "without-password",
+        "PubkeyAuthentication": "yes",
+        # Don't read the user's ~/.rhosts and ~/.shosts files
+        "IgnoreRhosts": "yes",
+        "HostbasedAuthentication": "no",
+        # To enable empty passwords, change to yes (NOT RECOMMENDED)
+        "PermitEmptyPasswords": "no",
+        # Change to yes to enable challenge-response passwords (beware issues with
+        # some PAM modules and threads)
+        "ChallengeResponseAuthentication": "no",
+        # Change to no to disable tunnelled clear text passwords
+        "PasswordAuthentication": "no",
+        "X11Forwarding": "no",
+        "X11DisplayOffset": "10",
+        "PrintMotd": "no",
+        "PrintLastLog": "yes",
+        "TCPKeepAlive": "yes",
+        "AcceptEnv": "LANG LC_*",
+        "Subsystem": "sftp /usr/lib/openssh/sftp-server",
+        "UsePAM": "yes",
+    }
+    return salt_factories.spawn_sshd_server(
+        request,
+        "sshd",
+        listen_port=salt_ssh_sshd_port,
+        sshd_config_dict=sshd_config_dict,
+        config_dir=sshd_config_dir,
     )
 
 
