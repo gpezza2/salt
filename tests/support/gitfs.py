@@ -1,8 +1,6 @@
-# -*- coding: utf-8 -*-
 """
 Base classes for gitfs/git_pillar integration tests
 """
-from __future__ import absolute_import, print_function, unicode_literals
 
 import copy
 import errno
@@ -22,7 +20,7 @@ from salt.pillar import git_pillar
 from saltfactories.factories.base import DaemonFactory
 from saltfactories.factories.daemons.sshd import SshdDaemonFactory
 from saltfactories.utils.ports import get_unused_localhost_port
-from saltfactories.utils.processes.helpers import start_factory, terminate_process
+from saltfactories.utils.processes import terminate_process
 from tests.support.case import ModuleCase
 from tests.support.helpers import patched_environ, requires_system_grains
 from tests.support.mixins import (
@@ -38,6 +36,11 @@ try:
     import psutil
 except ImportError:
     pass
+
+
+def start_factory(*args, **kwargs):
+    pass
+
 
 log = logging.getLogger(__name__)
 

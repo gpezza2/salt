@@ -1,11 +1,9 @@
-# -*- coding: utf-8 -*-
 """
     tests.multimaster.conftest
     ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     Multimaster PyTest prep routines
 """
-from __future__ import absolute_import, print_function, unicode_literals
 
 import logging
 import os
@@ -22,7 +20,7 @@ log = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="package")
-def salt_mm_master_config(request, salt_factories):
+def salt_mm_master(salt_factories):
     root_dir = salt_factories._get_root_dir_for_daemon("mm-master")
     with salt.utils.files.fopen(
         os.path.join(RUNTIME_VARS.CONF_DIR, "mm_master")
@@ -51,16 +49,15 @@ def salt_mm_master_config(request, salt_factories):
             "prod": [RUNTIME_VARS.TMP_PRODENV_PILLAR_TREE],
         },
     }
-    return salt_factories.configure_master(
-        request,
-        "mm-master",
-        config_defaults=config_defaults,
-        config_overrides=config_overrides,
+    factory = salt_factories.get_salt_master_daemon(
+        "mm-master", config_defaults=config_defaults, config_overrides=config_overrides,
     )
+    with factory.started():
+        yield factory
 
 
 @pytest.fixture(scope="package")
-def salt_mm_minion_config(request, salt_factories, salt_mm_master, salt_mm_sub_master):
+def salt_mm_minion(request, salt_mm_master, salt_mm_sub_master):
     with salt.utils.files.fopen(
         os.path.join(RUNTIME_VARS.CONF_DIR, "mm_minion")
     ) as rfh:
@@ -79,17 +76,15 @@ def salt_mm_minion_config(request, salt_factories, salt_mm_master, salt_mm_sub_m
         ],
         "test.foo": "baz",
     }
-    return salt_factories.configure_minion(
-        request,
-        "mm-minion",
-        master_id=salt_mm_master.config["id"],
-        config_defaults=config_defaults,
-        config_overrides=config_overrides,
+    factory = salt_mm_master.get_salt_minion_daemon(
+        "mm-minion", config_defaults=config_defaults, config_overrides=config_overrides,
     )
+    with factory.started():
+        yield factory
 
 
 @pytest.fixture(scope="package")
-def salt_mm_sub_master_config(request, salt_factories, salt_mm_master):
+def salt_mm_sub_master(salt_factories, salt_mm_master):
     with salt.utils.files.fopen(
         os.path.join(RUNTIME_VARS.CONF_DIR, "mm_sub_master")
     ) as rfh:
@@ -118,18 +113,26 @@ def salt_mm_sub_master_config(request, salt_factories, salt_mm_master):
             "prod": [RUNTIME_VARS.TMP_PRODENV_PILLAR_TREE],
         },
     }
-    return salt_factories.configure_master(
-        request,
+
+    # The secondary salt master depends on the primarily salt master fixture
+    # because we need to clone the keys
+    for keyfile in ("master.pem", "master.pub"):
+        shutil.copyfile(
+            os.path.join(salt_mm_master.config["pki_dir"], keyfile),
+            os.path.join(salt_mm_sub_master.config["pki_dir"], keyfile),
+        )
+
+    factory = salt_factories.get_salt_master_daemon(
         "mm-sub-master",
         config_defaults=config_defaults,
         config_overrides=config_overrides,
     )
+    with factory.started():
+        yield factory
 
 
 @pytest.fixture(scope="package")
-def salt_mm_sub_minion_config(
-    request, salt_factories, salt_mm_master, salt_mm_sub_master
-):
+def salt_mm_sub_minion(request, salt_mm_master, salt_mm_sub_master):
     with salt.utils.files.fopen(
         os.path.join(RUNTIME_VARS.CONF_DIR, "mm_sub_minion")
     ) as rfh:
@@ -148,54 +151,13 @@ def salt_mm_sub_minion_config(
         ],
         "test.foo": "baz",
     }
-    return salt_factories.configure_minion(
-        request,
+    factory = salt_mm_sub_master.get_salt_minion_daemon(
         "mm-sub-minion",
-        master_id=salt_mm_sub_master.config["id"],
         config_defaults=config_defaults,
         config_overrides=config_overrides,
     )
-
-
-@pytest.fixture(scope="package")
-def salt_mm_master(request, salt_factories, salt_mm_master_config):
-    return salt_factories.spawn_master(request, "mm-master")
-
-
-@pytest.fixture(scope="package")
-def salt_mm_sub_master(
-    request, salt_factories, salt_mm_master, salt_mm_sub_master_config
-):
-    # The secondary salt master depends on the primarily salt master fixture
-    # because we need to clone the keys
-    for keyfile in ("master.pem", "master.pub"):
-        shutil.copyfile(
-            os.path.join(salt_mm_master.config["pki_dir"], keyfile),
-            os.path.join(salt_mm_sub_master_config["pki_dir"], keyfile),
-        )
-    return salt_factories.spawn_master(request, "mm-sub-master")
-
-
-@pytest.fixture(scope="package")
-def salt_mm_minion(
-    request, salt_factories, salt_mm_master, salt_mm_sub_master, salt_mm_minion_config
-):
-    return salt_factories.spawn_minion(
-        request, "mm-minion", master_id=salt_mm_master.config["id"]
-    )
-
-
-@pytest.fixture(scope="package")
-def salt_mm_sub_minion(
-    request,
-    salt_factories,
-    salt_mm_master,
-    salt_mm_sub_master,
-    salt_mm_sub_minion_config,
-):
-    return salt_factories.spawn_minion(
-        request, "mm-sub-minion", master_id=salt_mm_sub_master.config["id"]
-    )
+    with factory.started():
+        yield factory
 
 
 @pytest.fixture(scope="package", autouse=True)
@@ -205,7 +167,6 @@ def bridge_pytest_and_runtests(  # pylint: disable=function-redefined
     prod_env_state_tree_root_dir,
     base_env_pillar_tree_root_dir,
     prod_env_pillar_tree_root_dir,
-    salt_factories,
     salt_mm_master,
     salt_mm_minion,
     salt_mm_sub_master,

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
     tests.support.pytest.fixtures
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -155,7 +154,7 @@ def prod_env_pillar_tree_root_dir(pillar_tree_root_dir):
 
 
 @pytest.fixture(scope="session")
-def salt_syndic_master_config(request, salt_factories, salt_ssh_sshd_port):
+def salt_syndic_master(request, salt_factories, salt_ssh_sshd_port):
     root_dir = salt_factories._get_root_dir_for_daemon("syndic_master")
     conf_dir = root_dir / "conf"
     conf_dir.mkdir(exist_ok=True)
@@ -178,15 +177,11 @@ def salt_syndic_master_config(request, salt_factories, salt_ssh_sshd_port):
     ext_pillar = []
     if salt.utils.platform.is_windows():
         ext_pillar.append(
-            {
-                "cmd_yaml": "type {0}".format(
-                    os.path.join(RUNTIME_VARS.FILES, "ext.yaml")
-                )
-            }
+            {"cmd_yaml": "type {}".format(os.path.join(RUNTIME_VARS.FILES, "ext.yaml"))}
         )
     else:
         ext_pillar.append(
-            {"cmd_yaml": "cat {0}".format(os.path.join(RUNTIME_VARS.FILES, "ext.yaml"))}
+            {"cmd_yaml": "cat {}".format(os.path.join(RUNTIME_VARS.FILES, "ext.yaml"))}
         )
 
     # We need to copy the extension modules into the new master root_dir or
@@ -256,26 +251,39 @@ def salt_syndic_master_config(request, salt_factories, salt_ssh_sshd_port):
     with salt.utils.files.fopen(roster_path, "w") as wfh:
         wfh.write(roster_contents)
 
-    return salt_factories.configure_master(
-        request,
+    factory = salt_factories.get_salt_master_daemon(
         "syndic_master",
         order_masters=True,
         config_defaults=config_defaults,
         config_overrides=config_overrides,
     )
+    # We don't yet want the syndic machinery to start
+    # with factory.started():
+    #    yield factory
+    return factory
 
 
 @pytest.fixture(scope="session")
-def salt_syndic_config(request, salt_factories, salt_syndic_master_config):
-    return salt_factories.configure_syndic(
-        request, "syndic", master_of_masters_id="syndic_master"
+def salt_syndic(request, salt_factories, salt_syndic_master):
+    config_defaults = {"master": None, "minion": None, "syndic": None}
+    with salt.utils.files.fopen(os.path.join(RUNTIME_VARS.CONF_DIR, "syndic")) as rfh:
+        opts = yaml.deserialize(rfh.read())
+
+        opts["hosts.file"] = os.path.join(RUNTIME_VARS.TMP, "hosts")
+        opts["aliases.file"] = os.path.join(RUNTIME_VARS.TMP, "aliases")
+        opts["transport"] = request.config.getoption("--transport")
+        config_defaults["syndic"] = opts
+    factory = salt_syndic_master.get_salt_syndic_daemon(
+        "syndic", config_defaults=config_defaults
     )
+    # We don't yet want the syndic machinery to start
+    # with factory.started():
+    #    yield factory
+    return factory
 
 
 @pytest.fixture(scope="session")
-def salt_master_config(
-    request, salt_factories, salt_syndic_master_config, salt_ssh_sshd_port
-):
+def salt_master(request, salt_factories, salt_syndic_master, salt_ssh_sshd_port):
     root_dir = salt_factories._get_root_dir_for_daemon("master")
     conf_dir = root_dir / "conf"
     conf_dir.mkdir(exist_ok=True)
@@ -299,15 +307,11 @@ def salt_master_config(
     ext_pillar = []
     if salt.utils.platform.is_windows():
         ext_pillar.append(
-            {
-                "cmd_yaml": "type {0}".format(
-                    os.path.join(RUNTIME_VARS.FILES, "ext.yaml")
-                )
-            }
+            {"cmd_yaml": "type {}".format(os.path.join(RUNTIME_VARS.FILES, "ext.yaml"))}
         )
     else:
         ext_pillar.append(
-            {"cmd_yaml": "cat {0}".format(os.path.join(RUNTIME_VARS.FILES, "ext.yaml"))}
+            {"cmd_yaml": "cat {}".format(os.path.join(RUNTIME_VARS.FILES, "ext.yaml"))}
         )
     ext_pillar.append(
         {
@@ -398,17 +402,15 @@ def salt_master_config(
     with salt.utils.files.fopen(roster_path, "w") as wfh:
         wfh.write(roster_contents)
 
-    return salt_factories.configure_master(
-        request,
-        "master",
-        master_of_masters_id="syndic_master",
-        config_defaults=config_defaults,
-        config_overrides=config_overrides,
+    factory = salt_syndic_master.get_salt_master_daemon(
+        "master", config_defaults=config_defaults, config_overrides=config_overrides,
     )
+    with factory.started():
+        yield factory
 
 
 @pytest.fixture(scope="session")
-def salt_minion_config(request, salt_factories, salt_master_config):
+def salt_minion(request, salt_master):
     with salt.utils.files.fopen(os.path.join(RUNTIME_VARS.CONF_DIR, "minion")) as rfh:
         config_defaults = yaml.deserialize(rfh.read())
     config_defaults["hosts.file"] = os.path.join(RUNTIME_VARS.TMP, "hosts")
@@ -438,17 +440,19 @@ def salt_minion_config(request, salt_factories, salt_master_config):
     virtualenv_binary = _get_virtualenv_binary_path()
     if virtualenv_binary:
         config_overrides["venv_bin"] = virtualenv_binary
-    return salt_factories.configure_minion(
-        request,
-        "minion",
-        master_id="master",
-        config_defaults=config_defaults,
-        config_overrides=config_overrides,
+    factory = salt_master.get_salt_minion_daemon(
+        "minion", config_defaults=config_defaults, config_overrides=config_overrides,
     )
+    with factory.started():
+        # Sync All
+        salt_call_cli = factory.get_salt_call_cli()
+        ret = salt_call_cli.run("saltutil.sync_all", _timeout=120)
+        assert ret.exitcode == 0, ret
+        yield factory
 
 
 @pytest.fixture(scope="session")
-def salt_sub_minion_config(request, salt_factories, salt_master_config):
+def salt_sub_minion(request, salt_master):
     with salt.utils.files.fopen(
         os.path.join(RUNTIME_VARS.CONF_DIR, "sub_minion")
     ) as rfh:
@@ -480,61 +484,76 @@ def salt_sub_minion_config(request, salt_factories, salt_master_config):
     virtualenv_binary = _get_virtualenv_binary_path()
     if virtualenv_binary:
         config_overrides["venv_bin"] = virtualenv_binary
-    return salt_factories.configure_minion(
-        request,
+    factory = salt_master.get_salt_minion_daemon(
         "sub_minion",
-        master_id="master",
         config_defaults=config_defaults,
         config_overrides=config_overrides,
     )
+    with factory.started():
+        # Sync All
+        salt_call_cli = factory.get_salt_call_cli()
+        ret = salt_call_cli.run("saltutil.sync_all", _timeout=120)
+        assert ret.exitcode == 0, ret
+        yield factory
 
 
-@pytest.hookspec(firstresult=True)
-def pytest_saltfactories_syndic_configuration_defaults(
-    request, factories_manager, root_dir, syndic_id, syndic_master_port
-):
-    """
-    Hook which should return a dictionary tailored for the provided syndic_id with 3 keys:
+@pytest.fixture(scope="package")
+def salt_proxy(request, salt_factories, salt_master):
+    proxy_minion_id = "proxytest"
+    root_dir = salt_factories._get_root_dir_for_daemon(proxy_minion_id)
+    conf_dir = root_dir / "conf"
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    RUNTIME_VARS.TMP_PROXY_CONF_DIR = str(conf_dir)
 
-    * `master`: The default config for the master running along with the syndic
-    * `minion`: The default config for the master running along with the syndic
-    * `syndic`: The default config for the master running along with the syndic
+    with salt.utils.files.fopen(os.path.join(RUNTIME_VARS.CONF_DIR, "proxy")) as rfh:
+        config_defaults = yaml.deserialize(rfh.read())
 
-    Stops at the first non None result
-    """
-    factory_opts = {"master": None, "minion": None, "syndic": None}
-    if syndic_id == "syndic":
-        with salt.utils.files.fopen(
-            os.path.join(RUNTIME_VARS.CONF_DIR, "syndic")
-        ) as rfh:
-            opts = yaml.deserialize(rfh.read())
+    config_defaults["hosts.file"] = os.path.join(RUNTIME_VARS.TMP, "hosts")
+    config_defaults["aliases.file"] = os.path.join(RUNTIME_VARS.TMP, "aliases")
+    config_defaults["transport"] = request.config.getoption("--transport")
+    config_defaults["root_dir"] = str(root_dir)
 
-            opts["hosts.file"] = os.path.join(RUNTIME_VARS.TMP, "hosts")
-            opts["aliases.file"] = os.path.join(RUNTIME_VARS.TMP, "aliases")
-            opts["transport"] = request.config.getoption("--transport")
-            factory_opts["syndic"] = opts
-    return factory_opts
+    def remove_stale_key(proxy_key_file):
+        log.debug("Proxy minion %r KEY FILE: %s", proxy_minion_id, proxy_key_file)
+        if os.path.exists(proxy_key_file):
+            os.unlink(proxy_key_file)
+        else:
+            log.warning("The proxy minion key was not found at %s", proxy_key_file)
+
+    factory = salt_master.get_proxy_minion_daemon(
+        proxy_minion_id, config_defaults=config_defaults
+    )
+    proxy_key_file = os.path.join(
+        salt_master.config["pki_dir"], "minions", proxy_minion_id
+    )
+    factory.register_after_terminate_callback(remove_stale_key, proxy_key_file)
+    with factory.started():
+        yield factory
 
 
-@pytest.hookspec(firstresult=True)
-def pytest_saltfactories_syndic_configuration_overrides(
-    request, factories_manager, syndic_id, config_defaults
-):
-    """
-    Hook which should return a dictionary tailored for the provided syndic_id.
-    This dictionary will override the default_options dictionary.
+@pytest.fixture(scope="package")
+def salt_cli(salt_master):
+    return salt_master.get_salt_cli()
 
-    The returned dictionary should contain 3 keys:
 
-    * `master`: The config overrides for the master running along with the syndic
-    * `minion`: The config overrides for the master running along with the syndic
-    * `syndic`: The config overridess for the master running along with the syndic
+@pytest.fixture(scope="package")
+def salt_cp_cli(salt_master):
+    return salt_master.get_salt_cp_cli()
 
-    The `default_options` parameter be None or have 3 keys, `master`, `minion`, `syndic`,
-    while will contain the default options for each of the daemons.
 
-    Stops at the first non None result
-    """
+@pytest.fixture(scope="package")
+def salt_key_cli(salt_master):
+    return salt_master.get_salt_key_cli()
+
+
+@pytest.fixture(scope="package")
+def salt_run_cli(salt_master):
+    return salt_master.get_salt_run_cli()
+
+
+@pytest.fixture(scope="package")
+def salt_call_cli(salt_minion):
+    return salt_minion.get_salt_call_cli()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -545,35 +564,35 @@ def bridge_pytest_and_runtests(
     base_env_pillar_tree_root_dir,
     prod_env_pillar_tree_root_dir,
     salt_factories,
-    salt_syndic_master_config,
-    salt_syndic_config,
-    salt_master_config,
-    salt_minion_config,
-    salt_sub_minion_config,
+    salt_syndic_master,
+    salt_syndic,
+    salt_master,
+    salt_minion,
+    salt_sub_minion,
     sshd_config_dir,
 ):
     # Make sure unittest2 uses the pytest generated configuration
-    RUNTIME_VARS.RUNTIME_CONFIGS["master"] = freeze(salt_master_config)
-    RUNTIME_VARS.RUNTIME_CONFIGS["minion"] = freeze(salt_minion_config)
-    RUNTIME_VARS.RUNTIME_CONFIGS["sub_minion"] = freeze(salt_sub_minion_config)
-    RUNTIME_VARS.RUNTIME_CONFIGS["syndic_master"] = freeze(salt_syndic_master_config)
-    RUNTIME_VARS.RUNTIME_CONFIGS["syndic"] = freeze(salt_syndic_config)
+    RUNTIME_VARS.RUNTIME_CONFIGS["master"] = freeze(salt_master.config)
+    RUNTIME_VARS.RUNTIME_CONFIGS["minion"] = freeze(salt_minion.config)
+    RUNTIME_VARS.RUNTIME_CONFIGS["sub_minion"] = freeze(salt_sub_minion.config)
+    RUNTIME_VARS.RUNTIME_CONFIGS["syndic_master"] = freeze(salt_syndic_master.config)
+    RUNTIME_VARS.RUNTIME_CONFIGS["syndic"] = freeze(salt_syndic.config)
     RUNTIME_VARS.RUNTIME_CONFIGS["client_config"] = freeze(
-        salt.config.client_config(salt_master_config["conf_file"])
+        salt.config.client_config(salt_master.config["conf_file"])
     )
 
     # Make sure unittest2 classes know their paths
     RUNTIME_VARS.TMP_ROOT_DIR = str(salt_factories.root_dir.resolve())
-    RUNTIME_VARS.TMP_CONF_DIR = os.path.dirname(salt_master_config["conf_file"])
-    RUNTIME_VARS.TMP_MINION_CONF_DIR = os.path.dirname(salt_minion_config["conf_file"])
+    RUNTIME_VARS.TMP_CONF_DIR = os.path.dirname(salt_master.config["conf_file"])
+    RUNTIME_VARS.TMP_MINION_CONF_DIR = os.path.dirname(salt_minion.config["conf_file"])
     RUNTIME_VARS.TMP_SUB_MINION_CONF_DIR = os.path.dirname(
-        salt_sub_minion_config["conf_file"]
+        salt_sub_minion.config["conf_file"]
     )
     RUNTIME_VARS.TMP_SYNDIC_MASTER_CONF_DIR = os.path.dirname(
-        salt_syndic_master_config["conf_file"]
+        salt_syndic_master.config["conf_file"]
     )
     RUNTIME_VARS.TMP_SYNDIC_MINION_CONF_DIR = os.path.dirname(
-        salt_syndic_config["conf_file"]
+        salt_syndic.config["conf_file"]
     )
     RUNTIME_VARS.TMP_SSH_CONF_DIR = sshd_config_dir
 
@@ -586,7 +605,7 @@ def sshd_config_dir(salt_factories):
 
 
 @pytest.fixture(scope="session")
-def sshd_server(request, salt_factories, salt_ssh_sshd_port, sshd_config_dir):
+def sshd_server(salt_factories, salt_ssh_sshd_port, sshd_config_dir):
     sshd_config_dict = {
         "Protocol": "2",
         # Turn strict modes off so that we can operate in /tmp
@@ -617,13 +636,14 @@ def sshd_server(request, salt_factories, salt_ssh_sshd_port, sshd_config_dir):
         "Subsystem": "sftp /usr/lib/openssh/sftp-server",
         "UsePAM": "yes",
     }
-    return salt_factories.spawn_sshd_server(
-        request,
+    factory = salt_factories.get_sshd_daemon(
         "sshd",
         listen_port=salt_ssh_sshd_port,
         sshd_config_dict=sshd_config_dict,
         config_dir=sshd_config_dir,
     )
+    with factory.started():
+        yield factory
 
 
 # Only allow star importing the functions defined in this module

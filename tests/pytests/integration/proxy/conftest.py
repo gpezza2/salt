@@ -1,11 +1,9 @@
-# -*- coding: utf-8 -*-
-'''
+"""
     tests.pytests.integration.proxy.conftest
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     Proxy related fixtures
-'''
-from __future__ import absolute_import, unicode_literals
+"""
 
 import logging
 import os
@@ -19,7 +17,7 @@ log = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="package")
-def salt_proxy(request, salt_factories, salt_master):
+def __salt_proxy(request, salt_factories, salt_master):
     proxy_minion_id = "proxytest"
     root_dir = salt_factories._get_root_dir_for_daemon(proxy_minion_id)
     conf_dir = root_dir / "conf"

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
     :codeauthor: Pedro Algarvio (pedro@algarvio.me)
 
@@ -26,7 +25,7 @@ from datetime import datetime, timedelta
 
 import pytest
 import salt.utils.files
-from saltfactories.utils.processes.helpers import terminate_process
+from saltfactories.utils.processes import terminate_process
 from tests.support.cli_scripts import ScriptPathMixin
 from tests.support.helpers import RedirectStdStreams
 from tests.support.mixins import (  # pylint: disable=unused-import
